@@ -15,6 +15,6 @@ __pycache__/
 *.pyc
 .git/   
 =======
-__pycache__/
+__pycache__/ 
 *.pt
 

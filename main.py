@@ -14,5 +14,5 @@ if __name__ == "__main__":
         batch=4,         
         workers=2,         
         pretrained=False,
-        device = 0
+        device = 0#
     )
