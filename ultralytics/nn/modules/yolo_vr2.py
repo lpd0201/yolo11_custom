@@ -210,8 +210,8 @@ class FDD(nn.Module):
         self.c1 = c1
         self.c2 = c2
         self.cv_high = nn.Sequential(
-            nn.Conv2d(3 * c1, c1, kernel_size=1, stride=1,groups=c1, bias=False),
-            nn.BatchNorm2d(c1),
+            nn.Conv2d(3 * c1, c2, kernel_size=1, stride=1,groups=c1, bias=False),
+            nn.BatchNorm2d(c2),
             nn.SiLU(inplace=True)
         )
         self.cv_low = nn.Sequential(
@@ -262,7 +262,7 @@ class FDD(nn.Module):
         x_high = F.conv2d(x, self.w_haar_H, stride=2, groups=self.c1)
         res = self.dwsconv(x)
         res_mask = self.sigmoid(res)
-        high_features = self.simam(self.cv_high(x_high))
+        high_features = self.rfaconv(self.cv_high(x_high))
         low_out = self.cv_low(x_low)
         # global_context = self.sigmoid(self.gap(low_out))
         # low_attn = low_out + (low_out * global_context)
