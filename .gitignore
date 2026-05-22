@@ -10,7 +10,6 @@ UAV-ROD/
 visdrone_result/
 uavrod/
 VisDrone2019_YOLO_Standard/
-<<<<<<< HEAD
 yolovr.py/
 __pycache__/
 *.pyc
@@ -18,4 +17,4 @@ __pycache__/
 =======
 __pycache__/
 *.pt
->>>>>>> a85b608541808a59c7235557facc85df239f31da
+
