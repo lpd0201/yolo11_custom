@@ -3,7 +3,7 @@
 from ultralytics import YOLO
 import torch
 
-model = YOLO("C:/Users/DUONG/Desktop/Paper_Q3_YOLO/ultralytics/cfg/models/11/yolo_shortneck.yaml")
+model = YOLO("C:/Users/DUONG/Desktop/Paper_Q3_YOLO/ultralytics/cfg/models/11/yolo_customx.yaml")
 
 if __name__ == "__main__":
     rs = model.train(
@@ -15,3 +15,4 @@ if __name__ == "__main__":
         pretrained=False,
         device = 0#
     )
+

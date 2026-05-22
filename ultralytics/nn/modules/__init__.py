@@ -189,5 +189,4 @@ __all__ = (
     "YOLOESegment26",
     "v10Detect",
     "FDD",
-    "Y_DMT_Lite",
 )

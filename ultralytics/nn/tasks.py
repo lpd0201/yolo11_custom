@@ -1606,7 +1606,6 @@ def parse_model(d, ch, verbose=True):
             MSFP,
             HGBlock,
             C3k2_GhostV2,
-            Y_DMT_Lite,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
