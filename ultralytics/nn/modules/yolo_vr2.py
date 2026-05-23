@@ -443,7 +443,7 @@ class InStrip(nn.Module):
         return out1 + out2 + out3_3 + out4
 
 class FDD(nn.Module):   
-    def __init__(self, c1=3, c2=64, stripk=5):
+    def __init__(self, c1, c2, stripk=5):
         super().__init__()
         self.c1 = c1
         self.c2 = c2
@@ -464,7 +464,7 @@ class FDD(nn.Module):
         )
         self.inception = InStrip(c2, c2)
         # self.gap = nn.AdaptiveAvgPool2d(1)
-        self.rfaconv = RFAConv(c2, c2, kernel_size=3, stride=1)
+        self.rfaconv = RFAConv(c1, c1, kernel_size=3, stride=1)
         self.simam = SimAM(1e-4)
         self.batchNorm = nn.BatchNorm2d(c2)
         self.sigmoid = nn.Sigmoid() 
@@ -500,7 +500,7 @@ class FDD(nn.Module):
         x_high = F.conv2d(x, self.w_haar_H, stride=2, groups=self.c1)
         res = self.dwsconv(x)
         res_mask = self.sigmoid(res)
-        high_features = self.simam(self.cv_high(x_high))
+        high_features = self.rfaconv(self.cv_high(x_high))
         low_out = self.cv_low(x_low)
         # global_context = self.sigmoid(self.gap(low_out))
         # low_attn = low_out + (low_out * global_context)
@@ -811,7 +811,137 @@ class DySample(nn.Module):
             return self.forward_pl(x)
         return self.forward_lp(x)
 
+import torch
+import torch.nn as nn
 
+def channel_shuffle(x, groups):
+    batchsize, num_channels, height, width = x.data.size()
+    channels_per_group = num_channels // groups
+    # Đảo kênh: reshape -> transpose -> reshape
+    x = x.view(batchsize, groups, channels_per_group, height, width)
+    x = torch.transpose(x, 1, 2).contiguous()
+    x = x.view(batchsize, -1, height, width)
+    return x
 
+class PConv(nn.Module):
 
+    def __init__(self, c1, c2, n_div=4, forward='split_cat', *args, **kwargs):
+        super().__init__()
+        self.dim_conv3 = c1 // n_div
+        self.dim_untouched = c1 - self.dim_conv3
+        self.partial_conv3 = nn.Conv2d(self.dim_conv3, self.dim_conv3, 3, 1, 1, bias=False)
+        self.proj = nn.Conv2d(c1, c2, 1, 1, 0, bias=False) if c1 != c2 else nn.Identity()
+        if forward == 'slicing':
+            self.forward = self.forward_slicing
+        elif forward == 'split_cat':
+            self.forward = self.forward_split_cat
+        else:
+            raise NotImplementedError
 
+    def forward_slicing(self, x):
+        # only for inference
+        x = x.clone()   # !!! Keep the original input intact for the residual connection later
+        x[:, :self.dim_conv3, :, :] = self.partial_conv3(x[:, :self.dim_conv3, :, :])
+
+        return x
+
+    def forward_split_cat(self, x) :
+        # for training/inference
+        x1, x2 = torch.split(x, [self.dim_conv3, self.dim_untouched], dim=1)
+        x1 = self.partial_conv3(x1)
+        x = torch.cat((x1, x2), 1)
+
+        return x
+
+# ==========================================
+# 1. Khối FasterNet (Hộp màu Vàng trong sơ đồ)
+# ==========================================
+class FasterNetBlock(nn.Module):
+    def __init__(self, c):
+        super().__init__()
+        # Theo sơ đồ: 3 lớp PConv liên tiếp, lớp giữa có BN & GELU
+        self.pconv1 = PConv(c, c, n_div=4, forward='split_cat')
+        self.pconv2 = PConv(c, c, n_div=4, forward='split_cat')
+        self.bn_gelu = nn.Sequential(
+            nn.BatchNorm2d(c),
+            nn.GELU()
+        )
+        self.pconv3 = PConv(c, c, n_div=4, forward='split_cat')
+
+    def forward(self, x):
+        # Đường residual nét liền đi ngang + đường đi qua các PConv
+        res = x
+        x = self.pconv1(x)
+        x = self.pconv2(x)
+        x = self.bn_gelu(x)
+        x = self.pconv3(x)
+        return x + res  # Phép cộng (dấu + trong vòng tròn)
+
+# ==========================================
+# 2. Khối RexHazy (Hộp màu Xanh dương) - Code của bạn đã chuẩn
+# ==========================================
+class RexHazyBlock(nn.Module):
+    def __init__(self, c_in, c_out):
+        super().__init__()
+        self.c_half = c_in // 2
+        
+        self.branch_reflectance = nn.Sequential(
+            nn.Conv2d(self.c_half, self.c_half, 3, 1, 1, groups=self.c_half, bias=False),
+            nn.BatchNorm2d(self.c_half),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(self.c_half, self.c_half, 1, 1, bias=False),
+            nn.BatchNorm2d(self.c_half),
+            nn.SiLU(inplace=True)
+        )
+        
+        self.branch_illumination = nn.Sequential(
+            nn.Conv2d(self.c_half, self.c_half, 5, 1, 2, groups=self.c_half, bias=False),
+            nn.BatchNorm2d(self.c_half),
+            nn.Conv2d(self.c_half, self.c_half, 1, 1, bias=False),
+            nn.Sigmoid() 
+        )
+
+    def forward(self, x):
+        x1, x2 = x.chunk(2, dim=1) # split
+        R = self.branch_reflectance(x1)
+        L = self.branch_illumination(x2)
+        enhanced_features = R * L # Phép nhân (dấu x trong vòng tròn)
+        
+        # Để đảm bảo số kênh ra = số kênh vào, ta nối x1 và features đã tăng cường
+        out = torch.cat([x1, enhanced_features], dim=1)
+        # Giả định bạn đã có hàm channel_shuffle
+        return channel_shuffle(out, groups=2)
+
+# ==========================================
+# 3. Khối RFC3k2 Tổng thể (Đường viền nét đứt)
+# ==========================================
+class RFC3k2(nn.Module):
+    # LƯU Ý QUAN TRỌNG: Sơ đồ là kiến trúc song song, nên tham số `n` (repeat) 
+    # không còn ý nghĩa nối tiếp như C3k2 truyền thống nữa. 
+    def __init__(self, c1, c2, n=1, e=0.5, *args, **kwargs):
+        super().__init__()
+        assert e <= 1.0, f"Hệ số e={e} quá lớn! Kiểm tra lại YAML."
+        
+        self.c = int(c2 * e)
+        self.c = self.c if self.c % 2 == 0 else self.c + 1 
+        
+        # 1. Lớp Conv đầu tiên
+        self.cv1 = nn.Conv2d(c1, 2 * self.c, 1, 1, bias=False)
+        
+        # 2. Hai nhánh song song (Thay vì dùng ModuleList và for loop)
+        self.fasternet = FasterNetBlock(self.c)
+        self.rexhazy = RexHazyBlock(self.c, self.c)
+        
+        # 3. Lớp Conv cuối cùng gom kênh
+        self.cv2 = nn.Conv2d(2 * self.c, c2, 1, 1, bias=False)
+
+    def forward(self, x):
+        # Đi qua conv đầu tiên và split làm 2 phần đều nhau
+        x1, x2 = self.cv1(x).chunk(2, dim=1)
+        
+        # Chạy song song 2 nhánh
+        out_fasternet = self.fasternet(x1)
+        out_rexhazy = self.rexhazy(x2)
+        
+        # Concat và đi qua conv cuối
+        return self.cv2(torch.cat([out_fasternet, out_rexhazy], dim=1))

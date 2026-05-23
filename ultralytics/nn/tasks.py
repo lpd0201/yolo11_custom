@@ -1606,6 +1606,8 @@ def parse_model(d, ch, verbose=True):
             MSFP,
             HGBlock,
             C3k2_GhostV2,
+            RFC3k2,
+            PConv,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1626,7 +1628,8 @@ def parse_model(d, ch, verbose=True):
             C2PSA,
             A2C2f,
             HGBlock,
-            C3k2_GhostV2
+            C3k2_GhostV2,
+            RFC3k2,
         }
     )
     for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"]):  # from, number, module, args
@@ -1646,11 +1649,11 @@ def parse_model(d, ch, verbose=True):
             c1, c2 = ch[f], args[0]
             if c2 != nc:  # if c2 != nc (e.g., Classify() output)
                 c2 = make_divisible(min(c2, max_channels) * width, 8)
+            args = [c1, c2, *args[1:]]
             if m is C2fAttn:  # set 1) embed channels and 2) num heads
                 args[1] = make_divisible(min(args[1], max_channels // 2) * width, 8)
                 args[2] = int(max(round(min(args[2], max_channels // 2 // 32)) * width, 1) if args[2] > 1 else args[2])
 
-            args = [c1, c2, *args[1:]]
             if m in repeat_modules:
                 args.insert(2, n)  # number of repeats
                 n = 1
@@ -1664,6 +1667,7 @@ def parse_model(d, ch, verbose=True):
                     args.extend((True, 1.2))
             if m is C2fCIB:
                 legacy = False
+        
         elif m is C3k2_GhostV2:
                 # Ép buộc chỉ truyền đúng các tham số mà __init__ của GhostV2 cần
                 # Thay vì dùng args[1:], hãy lấy đích danh các tham số từ yaml

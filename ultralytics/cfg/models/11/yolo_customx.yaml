@@ -1,42 +1,90 @@
-nc: 10
-scales:
-  n: [0.50, 0.25, 1024] 
-  # s: [0.50, 0.50, 1024]
+# nc: 10
+# scales:
+#   n: [0.50, 0.25, 1024] 
+#   # s: [0.50, 0.50, 1024]
 
-backbone:
+# backbone:
 
-  - [-1, 1, Conv, [64, 3, 2]]         
-  - [-1, 1, FDD, [128]]               
-  - [-1, 3, C3k2, [128, False, 0.25]] 
-  # - [-1, 3, C3k2_GhostV2, [128, False, 1, 0.25, 'original']]
-  - [-1, 1, FDD, [256]]               
-  - [-1, 6, C3k2, [256, False, 0.25]] 
-  # - [-1, 6, C3k2_GhostV2, [256, False, 1, 0.25, 'attn']]
-  - [-1, 1, FDD, [512]]               
-  # - [-1, 6, C3k2, [512, False, 0.25]] 
-  - [-1, 6, C3k2_GhostV2, [512, False, 1, 0.25, 'attn']]
-  - [-1, 1, SPPF, [512]]             
+#   - [-1, 1, Conv, [64, 3, 2]]         
+#   - [-1, 1, FDD, [128]]               
+#   - [-1, 3, C3k2, [128, False, 0.25]] 
+#   # - [-1, 3, C3k2_GhostV2, [128, False, 1, 0.25, 'original']]
+#   - [-1, 1, FDD, [256]]               
+#   - [-1, 6, C3k2, [256, False, 0.25]] 
+#   # - [-1, 6, C3k2_GhostV2, [256, False, 1, 0.25, 'attn']]
+#   - [-1, 1, FDD, [512]]               
+#   # - [-1, 6, C3k2, [512, False, 0.25]] 
+#   - [-1, 6, C3k2_GhostV2, [512, False, 1, 0.25, 'attn']]
+#   - [-1, 1, SPPF, [512]]             
 
-head:
+# head:
   
-  - [2, 1, Conv, [64, 1]]            
-  - [4, 1, Conv, [128, 1]]            
-  - [7, 1, Conv, [256, 1]]            
+#   - [2, 1, Conv, [64, 1]]            
+#   - [4, 1, Conv, [128, 1]]            
+#   - [7, 1, Conv, [256, 1]]            
 
 
-  - [-1, 1, DySample, []]             
-  - [[-1, 9], 1, Concat, [1]]        
-  - [-1, 2, C3k2_GhostV2, [256, False, 1, 0.25, 'attn']]      
+#   - [-1, 1, DySample, []]             
+#   - [[-1, 9], 1, Concat, [1]]        
+#   - [-1, 2, C3k2_GhostV2, [256, False, 1, 0.25, 'attn']]      
 
-  - [-1, 1, Conv, [128, 1, 1]]          
+#   - [-1, 1, Conv, [128, 1, 1]]          
   
 
-  - [-1, 1, DySample, []]             
-  - [[-1, 8], 1, Concat, [1]]         
-  - [-1, 2, C3k2, [128, False]]       
+#   - [-1, 1, DySample, []]             
+#   - [[-1, 8], 1, Concat, [1]]         
+#   - [-1, 2, C3k2, [128, False]]       
 
-  - [13, 1, Conv, [256, 3, 2]]       
-  - [[-1, 10], 1, Concat, [1]]        
-  - [-1, 2, C3k2_GhostV2, [512, False, 1, 0.25, 'attn']]      
+#   - [13, 1, Conv, [256, 3, 2]]       
+#   - [[-1, 10], 1, Concat, [1]]        
+#   - [-1, 2, C3k2_GhostV2, [512, False, 1, 0.25, 'attn']]      
 
-  - [[17, 13, 20], 1, Detect, [nc]]   
+#   - [[17, 13, 20], 1, Detect, [nc]]   
+
+
+# nc: 10
+# scales:
+#   n: [0.50, 0.25, 1024] 
+#   # s: [0.50, 0.50, 1024]
+
+# backbone:
+
+#   - [-1, 1, Conv, [64, 3, 2]]         
+#   - [-1, 1, FDD, [128]]               
+#   - [-1, 3, C3k2, [128, False, 0.25]] 
+#   # - [-1, 3, C3k2_GhostV2, [128, False, 1, 0.25, 'original']]
+#   - [-1, 1, FDD, [256]]               
+#   - [-1, 6, C3k2, [256, False, 0.25]] 
+#   # - [-1, 6, C3k2_GhostV2, [256, False, 1, 0.25, 'attn']]
+#   - [-1, 1, FDD, [512]]               
+#   # - [-1, 6, C3k2, [512, False, 0.25]] 
+#   - [-1, 6, C3k2, [512, False, 0.25]]
+#   - [-1, 1, SPPF, [512]]    
+
+# head:
+#   # --- BƯỚC 1: NÉN KÊNH CHỌN LỌC ---
+#   # CHÚ Ý: ĐÃ BỎ LỚP NÉN KÊNH Ở P2! Để nguyên 128 kênh từ backbone.
+#   - [4, 1, Conv, [128, 1]]  # 8: Nén P3 về 128 kênh
+#   - [7, 1, Conv, [256, 1]]  # 9: Nén P4 về 256 kênh
+
+#   # --- BƯỚC 2: TOP-DOWN ---
+#   # Từ P4 ép xuống P3
+#   - [-1, 1, DySample, []]       # 10: Upsample P4 (256 kênh)
+#   - [[-1, 8], 1, Concat, [1]]   # 11: Nối với P3 (128 kênh) -> Tổng 384 kênh
+#   - [-1, 2, C3k2, [256, False]] # 12: ĐẦU RA P3
+
+#   # Từ P3 ép xuống P2
+#   - [-1, 1, Conv, [128, 1]]     # 13: Nén P3 (Layer 12) trước khi Upsample
+#   - [-1, 1, DySample, []]       # 14: Upsample P3 (128 kênh)
+#   # GIẢI PHÓNG P2: Nối thẳng với Layer 2 (P2 gốc từ Backbone, 128 kênh)
+#   - [[-1, 2], 1, Concat, [1]]   # 15: P3_up(128) + P2_gốc(128) -> Tổng 256 kênh
+#   - [-1, 2, C3k2, [128, False]] # 16: ĐẦU RA P2 (Tiny Head) -> Rất giàu thông tin!
+
+#   # --- BƯỚC 3: BOTTOM-UP BẤT ĐỐI XỨNG ---
+#   - [12, 1, Conv, [256, 3, 2]]  # 17: Lấy P3 (Layer 12) hạ xuống P4
+#   - [[-1, 9], 1, Concat, [1]]   # 18: Nối với P4 nguyên thủy (Layer 9)
+#   - [-1, 2, C3k2, [512, False]] # 19: ĐẦU RA P4
+
+#   # --- BƯỚC 4: DETECT ---
+#   # P2 (16), P3 (12), P4 (19)
+#   - [[16, 12, 19], 1, Detect, [nc]]

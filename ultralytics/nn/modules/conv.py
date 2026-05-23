@@ -36,6 +36,7 @@ def autopad(k, p=None, d=1):  # kernel, padding, dilation
     return p
 
 
+
 class Conv(nn.Module):
     """Standard convolution module with batch normalization and activation.
 
