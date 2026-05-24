@@ -883,7 +883,7 @@ class FasterNetBlock(nn.Module):
 class RexHazyBlock(nn.Module):
     def __init__(self, c_in, c_out):
         super().__init__()
-        self.c_half = c_in // 2
+        self.c_half = c_in
         
         self.branch_reflectance = nn.Sequential(
             nn.Conv2d(self.c_half, self.c_half, 3, 1, 1, groups=self.c_half, bias=False),
@@ -900,17 +900,23 @@ class RexHazyBlock(nn.Module):
             nn.Conv2d(self.c_half, self.c_half, 1, 1, bias=False),
             nn.Sigmoid() 
         )
+        self.branch_strip = nn.Sequential(
+            nn.Conv2d(self.c_half, self.c_half, kernel_size=(1, 5), stride=1, padding=(0, 2), groups=self.c_half, bias=False),
+            nn.BatchNorm2d(self.c_half),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(self.c_half, self.c_half, kernel_size=(5, 1), stride=1, padding=(2, 0), groups=self.c_half, bias=False),
+            nn.BatchNorm2d(self.c_half),
+            nn.SiLU(inplace=True)
+        )
 
     def forward(self, x):
-        x1, x2 = x.chunk(2, dim=1) # split
-        R = self.branch_reflectance(x1)
-        L = self.branch_illumination(x2)
-        enhanced_features = R * L # Phép nhân (dấu x trong vòng tròn)
-        
-        # Để đảm bảo số kênh ra = số kênh vào, ta nối x1 và features đã tăng cường
-        out = torch.cat([x1, enhanced_features], dim=1)
-        # Giả định bạn đã có hàm channel_shuffle
-        return channel_shuffle(out, groups=2)
+        R = self.branch_reflectance(x)
+        L = self.branch_illumination(x)
+        F_clean = R * L
+        F_strip = self.branch_strip(F_clean)
+        out1 = F_strip + F_clean
+        out2 = out1 + x
+        return out2
 
 # ==========================================
 # 3. Khối RFC3k2 Tổng thể (Đường viền nét đứt)
@@ -918,7 +924,7 @@ class RexHazyBlock(nn.Module):
 class RFC3k2(nn.Module):
     # LƯU Ý QUAN TRỌNG: Sơ đồ là kiến trúc song song, nên tham số `n` (repeat) 
     # không còn ý nghĩa nối tiếp như C3k2 truyền thống nữa. 
-    def __init__(self, c1, c2, n=1, e=0.5, *args, **kwargs):
+    def __init__(self, c1, c2, n=1, e=0.5, shortcut=True, *args, **kwargs):
         super().__init__()
         assert e <= 1.0, f"Hệ số e={e} quá lớn! Kiểm tra lại YAML."
         
@@ -934,6 +940,7 @@ class RFC3k2(nn.Module):
         
         # 3. Lớp Conv cuối cùng gom kênh
         self.cv2 = nn.Conv2d(2 * self.c, c2, 1, 1, bias=False)
+        self.add = shortcut and c1 == c2
 
     def forward(self, x):
         # Đi qua conv đầu tiên và split làm 2 phần đều nhau
@@ -944,4 +951,6 @@ class RFC3k2(nn.Module):
         out_rexhazy = self.rexhazy(x2)
         
         # Concat và đi qua conv cuối
-        return self.cv2(torch.cat([out_fasternet, out_rexhazy], dim=1))
+        out_final = self.cv2(torch.cat([out_fasternet, out_rexhazy], dim=1))
+        return x + out_final if self.add else out_final
+        

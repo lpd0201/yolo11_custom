@@ -14,6 +14,6 @@ if __name__ == "__main__":
         workers=2,         
         pretrained=False,
         device = 0,
-        amp = False
+        amp=False
     )
 
