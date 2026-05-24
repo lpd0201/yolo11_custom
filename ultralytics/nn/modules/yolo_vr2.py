@@ -385,25 +385,6 @@ class RFAConv(nn.Module): # 基于Group Conv实现的RFAConv
                               n2=self.kernel_size)
         return self.conv(conv_data)
 
-# def autopad(k, p=None, d=1):  # kernel, padding, dilation
-#     """Pad to 'same' shape outputs."""
-#     if d > 1:
-#         k = d * (k - 1) + 1 if isinstance(k, int) else [d * (x - 1) + 1 for x in k]  # actual kernel-size
-#     if p is None:
-#         p = k // 2 if isinstance(k, int) else [x // 2 for x in k]  # auto-pad
-#     return p
-
-# class Conv(nn.Module):
-#     # default_act = nn.SiLU()  # default activation
-#     def __init__(self, c1, c2, k=1, s=1, p=None, g=1, d=1, act=True):
-#         super().__init__()
-#         self.conv = nn.Conv2d(c1, c2, k, s, autopad(k, p, d), groups=g, dilation=d, bias=False)
-#         self.bn = nn.BatchNorm2d(c2)
-#         self.act = nn.GELU() if act else nn.Identity()
-#     def forward(self, x):
-#         return self.act(self.bn(self.conv(x)))
-#     def forward_fuse(self, x):
-#         return self.act(self.conv(x))
 
 class InStrip(nn.Module):
     def __init__(self, c1, c2):
@@ -487,14 +468,7 @@ class FDD(nn.Module):
         self.register_buffer('w_haar_L', haar_L.contiguous())
         self.register_buffer('w_haar_H', haar_H.contiguous())
     def forward(self, x):
-        # x_low = F.conv2d(x, self.w_haar_L, stride=2, groups=self.c1)
-        # x_high = F.conv2d(x, self.w_haar_H, stride=2, groups=self.c1)
-        # high_features = self.rfaconv(self.cv_high(x_high))
-        # low_out = self.cv_low(x_low)
-        # low = self.branch_strip(low_out)
-        # global_context = self.sigmoid(self.gap(low_out))
-        # low_features = low + low_out + (low_out * global_context)
-        # return self.silu(self.batchNorm(high_features + low_features))
+
         
         x_low = F.conv2d(x, self.w_haar_L, stride=2, groups=self.c1)
         x_high = F.conv2d(x, self.w_haar_H, stride=2, groups=self.c1)
@@ -502,15 +476,10 @@ class FDD(nn.Module):
         res_mask = self.sigmoid(res)
         high_features = self.rfaconv(self.cv_high(x_high))
         low_out = self.cv_low(x_low)
-        # global_context = self.sigmoid(self.gap(low_out))
-        # low_attn = low_out + (low_out * global_context)
-        # combined_low = self.simam(low_attn + res)
-        # combined_low = self.simam(res + low_out)
-        # incept = self.inception(combined_low)
         low_features = self.inception(low_out)
         features = torch.cat([high_features, low_features], dim=1)
         features_out = self.fusion(features)
-        return self.silu(self.batchNorm(res + res_mask * features_out))
+        return self.silu(self.batchNorm((res * res_mask) + features_out))
        
 def _make_divisible(v, divisor, min_value=None):
     """
@@ -900,7 +869,7 @@ class RexHazyBlock(nn.Module):
             nn.Conv2d(self.c_half, self.c_half, 1, 1, bias=False),
             nn.Sigmoid() 
         )
-        self.branch_strip = nn.Sequential(
+        self.branch_strip1 = nn.Sequential(
             nn.Conv2d(self.c_half, self.c_half, kernel_size=(1, 5), stride=1, padding=(0, 2), groups=self.c_half, bias=False),
             nn.BatchNorm2d(self.c_half),
             nn.SiLU(inplace=True),
@@ -908,15 +877,27 @@ class RexHazyBlock(nn.Module):
             nn.BatchNorm2d(self.c_half),
             nn.SiLU(inplace=True)
         )
+        self.branch_strip2 = nn.Sequential(
+            nn.Conv2d(self.c_half, self.c_half, kernel_size=(1, 7), stride=1, padding=(0, 3), groups=self.c_half, bias=False),
+            nn.BatchNorm2d(self.c_half),
+            nn.SiLU(inplace=True),
+            nn.Conv2d(self.c_half, self.c_half, kernel_size=(7, 1), stride=1, padding=(3, 0), groups=self.c_half, bias=False),
+            nn.BatchNorm2d(self.c_half),
+            nn.SiLU(inplace=True),
+        )
+        self.fusion = nn.Sequential(
+            nn.Conv2d(2 * self.c_half, self.c_half, kernel_size=1, bias=False),
+            nn.BatchNorm2d(self.c_half),
+            nn.SiLU(inplace=True)
+        )
 
     def forward(self, x):
         R = self.branch_reflectance(x)
         L = self.branch_illumination(x)
-        F_clean = R * L
-        F_strip = self.branch_strip(F_clean)
-        out1 = F_strip + F_clean
-        out2 = out1 + x
-        return out2
+        F_clean = self.fusion(torch.cat([R, L], dim=1))
+        F_strip1 = self.branch_strip1(F_clean)
+        F_strip2 = self.branch_strip2(F_strip1 + F_clean)
+        return F_strip2 + x
 
 # ==========================================
 # 3. Khối RFC3k2 Tổng thể (Đường viền nét đứt)
