@@ -1605,8 +1605,6 @@ def parse_model(d, ch, verbose=True):
             FDD,
             MSFP,
             HGBlock,
-            RFC3k2,
-            PConv,
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1627,7 +1625,6 @@ def parse_model(d, ch, verbose=True):
             C2PSA,
             A2C2f,
             HGBlock,
-            RFC3k2,
         }
     )
     for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"]):  # from, number, module, args
@@ -1682,7 +1679,10 @@ def parse_model(d, ch, verbose=True):
         elif m is Concat:
             c2 = sum(ch[x] for x in f)
         elif m is DySample:
+            # c1 = ch[f]
+            # args = [c1, *args]
             c1 = ch[f]
+            c2 = c1  # Kênh đầu ra bằng kênh đầu vào
             args = [c1, *args]
         elif m in frozenset(
             {
