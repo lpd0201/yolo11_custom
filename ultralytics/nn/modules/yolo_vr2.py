@@ -89,7 +89,7 @@ class FDD(nn.Module):
         self.c1 = c1
         self.c2 = c2
         self.cv_high = nn.Sequential(
-            nn.Conv2d(3 * c1, c1, kernel_size=1, stride=1,groups=c1, bias=False),
+            nn.Conv2d(3 * c1, c1, kernel_size=1, stride=1, bias=False),
             nn.BatchNorm2d(c1),
             nn.SiLU(inplace=True)
         )
@@ -98,12 +98,14 @@ class FDD(nn.Module):
             nn.BatchNorm2d(c2), 
             nn.SiLU(inplace=True)
         )
-        self.dwsconv = nn.Sequential(
-            nn.Conv2d(c1, c1, kernel_size=3, stride=2, padding=1, groups=c1, bias=False),
-            nn.Conv2d(c1, c2, kernel_size=1, stride=1, bias=False),
+        self.residual = nn.Sequential(
+            nn.AvgPool2d(kernel_size=2, stride=2),
+            nn.Conv2d(c1, c2, kernel_size=1, bias=False),
             nn.BatchNorm2d(c2)
         )
         self.inception = InStrip(c2, c2)
+        self.silu = nn.SiLU(inplace=True)
+        self.bn = nn.BatchNorm2d(c2)
         # self.gap = nn.AdaptiveAvgPool2d(1)
         self.rfaconv = RFAConv(c1, c1, kernel_size=3, stride=1)
         self.simam = SimAM(1e-4)
@@ -128,14 +130,13 @@ class FDD(nn.Module):
     def forward(self, x):        
         x_low = F.conv2d(x, self.w_haar_L, stride=2, groups=self.c1)
         x_high = F.conv2d(x, self.w_haar_H, stride=2, groups=self.c1)
-        res = self.dwsconv(x)
-        res_mask = self.sigmoid(res)
+        res = self.residual(x)
         high_features = self.rfaconv(self.cv_high(x_high))
         low_out = self.cv_low(x_low)
         low_features = self.inception(low_out)
         features = torch.cat([high_features, low_features], dim=1)
         features_out = self.fusion(features)
-        return res * res_mask + features_out
+        return self.silu(self.bn(res + features_out))
 
 class CAA(nn.Module):
     def __init__(self, ch, h_kernel_size=11, v_kernel_size=11):
