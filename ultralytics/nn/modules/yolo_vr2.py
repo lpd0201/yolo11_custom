@@ -138,7 +138,7 @@ class FDD(nn.Module):
         return res * res_mask + features_out
 
 class CAA(nn.Module):
-    def __init__(self, ch, h_kernel_size=9, v_kernel_size=9):
+    def __init__(self, ch, h_kernel_size=11, v_kernel_size=11):
         super().__init__()
         self.avg_pool = nn.AvgPool2d(kernel_size=7, stride=1, padding=3)
         
@@ -200,7 +200,7 @@ class MSFP(nn.Module):
             nn.BatchNorm2d(c_mid),
             nn.SiLU(inplace=True)
         )
-        self.caa = CAA(c_mid, h_kernel_size=9, v_kernel_size=9)
+        self.caa = CAA(c_mid, h_kernel_size=11, v_kernel_size=11)
 
         self.cv2 = nn.Sequential(
             nn.Conv2d(c_mid * 5, c2, kernel_size=1, stride=1, bias=False),
