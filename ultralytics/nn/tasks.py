@@ -1605,7 +1605,6 @@ def parse_model(d, ch, verbose=True):
             FDD,
             MSFP,
             HGBlock,
-            C3k2_GhostV2,
             RFC3k2,
             PConv,
         }
@@ -1628,7 +1627,6 @@ def parse_model(d, ch, verbose=True):
             C2PSA,
             A2C2f,
             HGBlock,
-            C3k2_GhostV2,
             RFC3k2,
         }
     )
@@ -1668,20 +1666,7 @@ def parse_model(d, ch, verbose=True):
             if m is C2fCIB:
                 legacy = False
         
-        elif m is C3k2_GhostV2:
-                # Ép buộc chỉ truyền đúng các tham số mà __init__ của GhostV2 cần
-                # Thay vì dùng args[1:], hãy lấy đích danh các tham số từ yaml
-                c1 = ch[f]
-                c2 = args[0]
-                n = n # n đã được tính toán ở dòng trên
-                shortcut = args[1]
-                g = args[2] if len(args) > 2 else 1
-                e = args[3] if len(args) > 3 else 0.5
-                mode = args[4] if len(args) > 4 else 'original'
-                
-                # Tạo danh sách tham số chuẩn
-                args = [c1, c2, n, shortcut, g, e, mode]
-                m = m(*args)
+        
         elif m is AIFI:
             args = [ch[f], *args]
         elif m in frozenset({HGStem, HGBlock}):

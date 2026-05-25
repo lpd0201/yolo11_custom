@@ -1,2 +1,0 @@
-thay đổi FDD : res + (res_mask * features) -> (res * res_mask) + features
-thay đổi DeHazy: R * L -> conv(cat(R, L))
