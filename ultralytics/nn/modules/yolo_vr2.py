@@ -93,7 +93,7 @@ class FDD(nn.Module):
         self.rfaconv = RFAConv(c1, c1, kernel_size=3, stride=1)
         self.sigmoid = nn.Sigmoid() 
         self.fusion = nn.Sequential(
-            nn.Conv2d(2 * c2, c2, kernel_size=1, stride=1, bias=False),
+            nn.Conv2d(c1 + 2 * c2, c2, kernel_size=1, stride=1, bias=False),
             nn.BatchNorm2d(c2),
             nn.SiLU(inplace=True)
         )
@@ -115,11 +115,8 @@ class FDD(nn.Module):
         x_high = F.conv2d(x, self.w_haar_H, stride=2, groups=self.c1)
         res = self.residual(x)
         high_features = self.rfaconv(self.cv_high(x_high))
-        high_mask = self.sigmoid(self.mask_generator(high_features))
-        low_out = self.cv_low(x_low)
-        low_features = self.inception(low_out)
-        features = high_mask * low_features
-        features_final = torch.cat([features, res], dim=1)
+        low_features = self.inception(self.cv_low(x_low))
+        features_final = torch.cat([high_features, low_features, res], dim=1)
         features_out = self.fusion(features_final)
         return features_out
 
@@ -128,43 +125,31 @@ class RexHazyBlock(nn.Module):
     def __init__(self, c1, c2):
         super().__init__()
         self.c1 = c1
-
-        self.L_branch = nn.Sequential(
-            nn.Conv2d(c1, c1, kernel_size=5, padding=2, groups=c1, bias=False),
-            nn.BatchNorm2d(c1),
+        c_half = c1 // 2
+        self.branch1 = nn.Sequential(
+            nn.Conv2d(c1, c_half, kernel_size=5, padding=2, groups=c_half, bias=False),
+            nn.BatchNorm2d(c_half),
             nn.Sigmoid()
         )
 
-        self.agc_simul = nn.Sequential(
-            nn.Conv2d(c1, c1 // 2, kernel_size=3, padding=1, bias=False),
-            nn.BatchNorm2d(c1 // 2),
-            nn.SiLU()
+        self.branch2 = nn.Sequential(
+            nn.Conv2d(c1, c_half, kernel_size=3, padding=1, bias=False),
+            nn.BatchNorm2d(c_half),
+            nn.SiLU(inplace=True)
         )
 
-        self.clahe_simul = nn.Sequential(
-            nn.Conv2d(c1, c1 // 2, kernel_size=1, bias=False),
-            nn.BatchNorm2d(c1 // 2),
-            nn.SiLU()
+        self.fusion = nn.Sequential(
+            nn.Conv2d(c_half * 2, c2, kernel_size=1, bias=False),
+            nn.BatchNorm2d(c2)
         )
-
-        self.fusion = nn.Conv2d(c1, c2, kernel_size=1, bias=False)
-        self.bn = nn.BatchNorm2d(c2)
     def forward(self, x):
-        illum_map = self.L_branch(x)
-        
-        # R = S * 1/L -> xấp xỉ f(L) = 1/L thu được f(L) = 2 - L
-        enhanced_x = x * (2.0 - illum_map) 
-
-        F_1 = self.agc_simul(enhanced_x)
-        F_2 = self.clahe_simul(enhanced_x)
-
-        fused_feat = torch.cat([F_1, F_2], dim=1)
-        out = self.bn(self.fusion(fused_feat))
-        
+        F1 = self.branch1(x)
+        F2 = self.branch2(x)
+        fused = torch.cat([F1, F2], dim=1)
+        out = self.fusion(fused)
         if self.c1 == out.shape[1]:
             out = out + x
-            
-        return nn.SiLU()(out)
+        return nn.SiLU(inplace=True)(out)
 
 class RexC3k2(nn.Module):
 
