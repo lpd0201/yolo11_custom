@@ -189,6 +189,8 @@ __all__ = (
     "YOLOESegment26",
     "v10Detect",
     "FDD",
-    "RFC3k2",
+    "RexC3k2",
     "PConv",
+    "FPSPP",
+    "IndirectlyPathContextGuide",
 )

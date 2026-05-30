@@ -1603,8 +1603,10 @@ def parse_model(d, ch, verbose=True):
             C2fCIB,
             A2C2f,
             FDD,
-            MSFP,
+            RexC3k2,
             HGBlock,
+            FPSPP,
+            
         }
     )
     repeat_modules = frozenset(  # modules with 'repeat' arguments
@@ -1625,6 +1627,7 @@ def parse_model(d, ch, verbose=True):
             C2PSA,
             A2C2f,
             HGBlock,
+            RexC3k2,
         }
     )
     for i, (f, n, m, args) in enumerate(d["backbone"] + d["head"]):  # from, number, module, args
@@ -1683,6 +1686,16 @@ def parse_model(d, ch, verbose=True):
             # args = [c1, *args]
             c1 = ch[f]
             c2 = c1  # Kênh đầu ra bằng kênh đầu vào
+            args = [c1, *args]
+        elif m is IndirectlyPathContextGuide:
+            # Lấy danh sách các channel đầu vào tương ứng với [9, 8, 2]
+            c1 = [ch[x] for x in f] 
+            
+            # Kênh đầu ra (c2) sẽ bằng với kênh của nhánh nông nhất (P2), 
+            # tương ứng với vị trí cuối cùng trong mảng f (tức là c1[-1])
+            c2 = c1[-1] 
+            
+            # Đóng gói c1 vào args để truyền vào hàm __init__(self, c_list, r=16) của bạn
             args = [c1, *args]
         elif m in frozenset(
             {

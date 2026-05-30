@@ -10,8 +10,7 @@ if __name__ == "__main__":
         epochs = 2,
         data = "C:/Users/DUONG/Desktop/Paper_Q3_YOLO/codeandmodule/VisDrone2019.yaml",
         imgsz = 640,
-        batch=4,         
-        workers=2,         
+        batch=4,                  
         pretrained=False,
         device = 0,
         amp=False
