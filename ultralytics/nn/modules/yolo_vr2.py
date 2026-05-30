@@ -122,7 +122,7 @@ class FDD(nn.Module):
 
 
 class RexHazyBlock(nn.Module):
-    def __init__(self, c1, c2):
+    def __init__(self, c1, c2, shortcut=True):
         super().__init__()
         self.c1 = c1
         c_half = c1 // 2
@@ -142,12 +142,13 @@ class RexHazyBlock(nn.Module):
             nn.Conv2d(c_half * 2, c2, kernel_size=1, bias=False),
             nn.BatchNorm2d(c2)
         )
+        self.add = shortcut and c1 == c2
     def forward(self, x):
         F1 = self.branch1(x)
         F2 = self.branch2(x)
         fused = torch.cat([F1, F2], dim=1)
         out = self.fusion(fused)
-        if self.c1 == out.shape[1]:
+        if self.add:
             out = out + x
         return nn.SiLU(inplace=True)(out)
 
@@ -159,7 +160,7 @@ class RexC3k2(nn.Module):
         self.cv1 = Conv(c1, c_ * 2, 1, 1) 
         self.cv2 = Conv((2 + n) * c_, c2, 1)  
 
-        self.m = nn.ModuleList(RexHazyBlock(c_, c_) for _ in range(n))
+        self.m = nn.ModuleList(RexHazyBlock(c_, c_, shortcut=shortcut) for _ in range(n))
 
     def forward(self, x):
 
@@ -411,7 +412,7 @@ class PKSModule(nn.Module):
         self.deploy = True
 
 class FPSPP(nn.Module):
-    def __init__(self, c1, c2, n_div=2, deploy=False):
+    def __init__(self, c1, c2, n_div=4, deploy=False):
         super().__init__()
         c_ = c1 // 2  
         
@@ -419,7 +420,7 @@ class FPSPP(nn.Module):
         self.cv1 = Conv(c1, c_, k=1, s=1)
         
         # 2. Xử lý ngữ nghĩa chéo kênh cực nhanh (FasterNet)
-        self.faster_block = FasterNetBlock(c_, n_div=n_div, mlp_ratio=3.0)
+        self.faster_block = FasterNetBlock(c_, n_div=n_div, mlp_ratio=2.0)
         
         # 3. Trích xuất không gian đa quy mô và Gating (Official PKINet-v2)
         self.pks = PKSModule(c_, deploy=deploy)
