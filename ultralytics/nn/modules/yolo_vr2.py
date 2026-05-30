@@ -322,7 +322,7 @@ class PKSModule(nn.Module):
         super().__init__()
         self.deploy = deploy
         self.dim = dim
-        self.max_k = 19 
+        self.max_k = 19
         
         self.conv0 = nn.Conv2d(dim, dim, 5, padding=2, groups=dim)
         self.conv1 = nn.Conv2d(dim, dim, 1)
@@ -422,10 +422,14 @@ class FPSPP(nn.Module):
         # 2. Xử lý ngữ nghĩa chéo kênh cực nhanh (FasterNet)
         self.faster_block = FasterNetBlock(c_, n_div=n_div, mlp_ratio=2.0)
         
-        # 3. Trích xuất không gian đa quy mô và Gating (Official PKINet-v2)
+        self.proj_1 = nn.Conv2d(c_, c_, 1)
+        self.act = nn.GELU()
         self.pks = PKSModule(c_, deploy=deploy)
+        self.proj_2 = nn.Conv2d(c_, c_, 1)
         
-        # 4. Gộp luồng Faster và luồng PKS, sau đó xuất ra kênh c2
+        # 2. VŨ KHÍ BÍ MẬT: Layer Scale để chống bùng nổ Gradient (Không cần Sigmoid nữa)
+        self.layer_scale = nn.Parameter(1e-2 * torch.ones((c_)), requires_grad=True)
+        
         self.cv2 = Conv(c_ * 2, c2, k=1, s=1)
 
     def forward(self, x):
@@ -434,11 +438,13 @@ class FPSPP(nn.Module):
         
         # Đặc trưng sau khi làm mịn (không bị mất tín hiệu không gian nhờ residual)
         x_fast = self.faster_block(x_reduced)
+        pks_in = self.act(self.proj_1(x_fast))
+        pks_out = self.pks(pks_in)
+        pks_out = self.proj_2(pks_out)
         
-        # PKS đóng vai trò Attention: x_fast * MASK đa quy mô
-        x_pks = self.pks(x_fast)
+        # Áp dụng Layer Scale để hãm phương sai lúc khởi tạo
+        x_pks = x_fast + pks_out * self.layer_scale.unsqueeze(-1).unsqueeze(-1)
         
-        # Nối (Concat) 2 nguồn đặc trưng để giữ sự đa dạng trước khi đưa vào Neck
         return self.cv2(torch.cat([x_fast, x_pks], dim=1))
 
 class IndirectlyPathContextGuide(nn.Module):
@@ -481,6 +487,7 @@ class IndirectlyPathContextGuide(nn.Module):
         self.mask_generator = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),           # Global pool: C × 1 × 1
             nn.Conv2d(c_deep, c_reduced, kernel_size=1, bias=False),  # C → C/r
+            nn.BatchNorm2d(c_reduced),
             nn.ReLU(inplace=True),
             nn.Conv2d(c_reduced, c_mid, kernel_size=1, bias=False),    # C/r → C_mid
             nn.Sigmoid()                        # Mask A: C_mid × 1 × 1
@@ -495,6 +502,7 @@ class IndirectlyPathContextGuide(nn.Module):
         
         # 2b. Dysample để lên size Pi
         self.dysample_mid_to_shallow = DySample(c_shallow)
+        nn.init.constant_(self.mask_generator[4].weight, 0)
 
     def forward(self, x):
         """
@@ -545,3 +553,4 @@ class IndirectlyPathContextGuide(nn.Module):
         final_features = mid_up + p_shallow
         
         return final_features
+
