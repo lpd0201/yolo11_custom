@@ -127,10 +127,15 @@ class RexHazyBlock(nn.Module):
         self.c1 = c1
         c_half = c1 // 2
         self.branch1 = nn.Sequential(
-            nn.Conv2d(c1, c_half, kernel_size=5, padding=2, groups=c_half, bias=False),
+    # Ép kênh chuẩn xác bằng 1x1
+            nn.Conv2d(c1, c_half, kernel_size=1, bias=False),
             nn.BatchNorm2d(c_half),
-            nn.Sigmoid()
-        )
+            nn.SiLU(inplace=True),
+            # Giờ mới áp dụng Depthwise an toàn (in=out=groups=c_half)
+            nn.Conv2d(c_half, c_half, kernel_size=5, padding=2, groups=c_half, bias=False),
+            nn.BatchNorm2d(c_half),
+            nn.SiLU(inplace=True)
+)
 
         self.branch2 = nn.Sequential(
             nn.Conv2d(c1, c_half, kernel_size=3, padding=1, bias=False),
@@ -148,9 +153,10 @@ class RexHazyBlock(nn.Module):
         F2 = self.branch2(x)
         fused = torch.cat([F1, F2], dim=1)
         out = self.fusion(fused)
+        out = F.silu(out)
         if self.add:
             out = out + x
-        return nn.SiLU(inplace=True)(out)
+        return out
 
 class RexC3k2(nn.Module):
 
@@ -299,7 +305,7 @@ class FasterNetBlock(nn.Module):
             nn.Conv2d(c, hidden_dim, kernel_size=1, bias=False),
             nn.BatchNorm2d(hidden_dim),
             nn.GELU(),                                          
-            nn.Conv2d(hidden_dim, c, kernel_size=1, bias=False)  
+            nn.Conv2d(hidden_dim, c, kernel_size=1, bias=True)  
         )
 
     def forward(self, x):
@@ -322,7 +328,7 @@ class PKSModule(nn.Module):
         super().__init__()
         self.deploy = deploy
         self.dim = dim
-        self.max_k = 11
+        self.max_k = 19
         
         self.conv0 = nn.Conv2d(dim, dim, 5, padding=2, groups=dim)
         self.conv1 = nn.Conv2d(dim, dim, 1)
@@ -422,11 +428,16 @@ class FPSPP(nn.Module):
         # 2. Xử lý ngữ nghĩa chéo kênh cực nhanh (FasterNet)
         self.faster_block = FasterNetBlock(c_, n_div=n_div, mlp_ratio=2.0)
         
-        self.proj_1 = nn.Conv2d(c_, c_, 1)
+        self.proj_1 = nn.Sequential(
+            nn.Conv2d(c_, c_, 1, bias=False),
+            nn.BatchNorm2d(c_)
+        )
         self.act = nn.GELU()
         self.pks = PKSModule(c_, deploy=deploy)
-        self.proj_2 = nn.Conv2d(c_, c_, 1)
-        
+        self.proj_2 = nn.Sequential(
+            nn.Conv2d(c_, c_, kernel_size=1,bias=False),
+            nn.BatchNorm2d(c_)
+        )
         # 2. VŨ KHÍ BÍ MẬT: Layer Scale để chống bùng nổ Gradient (Không cần Sigmoid nữa)
         self.layer_scale = nn.Parameter(1e-2 * torch.ones((c_)), requires_grad=True)
         
@@ -476,7 +487,8 @@ class IndirectlyPathContextGuide(nn.Module):
         # 1a. Align channels từ Deep (Pi+2) về Mid (Pi+1)
         self.align_deep_to_mid = nn.Sequential(
             nn.Conv2d(c_deep, c_mid, kernel_size=1, bias=False),
-            nn.BatchNorm2d(c_mid)
+            nn.BatchNorm2d(c_mid),
+            nn.SiLU(inplace=True)
         )
         
         # 1b. Dysample để lên size Pi+1
@@ -489,7 +501,7 @@ class IndirectlyPathContextGuide(nn.Module):
             nn.Conv2d(c_deep, c_reduced, kernel_size=1, bias=False),  # C → C/r
             nn.BatchNorm2d(c_reduced),
             nn.ReLU(inplace=True),
-            nn.Conv2d(c_reduced, c_mid, kernel_size=1, bias=False),    # C/r → C_mid
+            nn.Conv2d(c_reduced, c_mid, kernel_size=1, bias=True),    # C/r → C_mid
             nn.Sigmoid()                        # Mask A: C_mid × 1 × 1
         )
         
@@ -497,7 +509,8 @@ class IndirectlyPathContextGuide(nn.Module):
         # 2a. Align channels từ Mid (đã fused) về Shallow (Pi)
         self.align_mid_to_shallow = nn.Sequential(
             nn.Conv2d(c_mid, c_shallow, kernel_size=1, bias=False),
-            nn.BatchNorm2d(c_shallow)
+            nn.BatchNorm2d(c_shallow),
+            nn.SiLU(inplace=True)
         )
         
         # 2b. Dysample để lên size Pi
