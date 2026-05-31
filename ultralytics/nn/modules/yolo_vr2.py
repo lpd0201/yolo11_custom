@@ -322,7 +322,7 @@ class PKSModule(nn.Module):
         super().__init__()
         self.deploy = deploy
         self.dim = dim
-        self.max_k = 19
+        self.max_k = 11
         
         self.conv0 = nn.Conv2d(dim, dim, 5, padding=2, groups=dim)
         self.conv1 = nn.Conv2d(dim, dim, 1)
