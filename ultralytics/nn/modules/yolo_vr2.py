@@ -151,7 +151,7 @@ class RexHazyBlock(nn.Module):
         F2 = self.branch2(x)
         fused = torch.cat([F1, F2], dim=1)
         out = self.fusion(fused)
-        out = F.silu(out)
+        # out = F.silu(out)
         if self.add:
             out = out + x
         return out
@@ -668,9 +668,12 @@ class HOD_LSKA(nn.Module):
             self.conv_spatial_h = nn.Conv2d(dim, dim, kernel_size=(1, 17), stride=(1,1), padding=(0,24), groups=dim, dilation=3, bias=False)
             self.conv_spatial_v = nn.Conv2d(dim, dim, kernel_size=(17, 1), stride=(1,1), padding=(24,0), groups=dim, dilation=3, bias=False)
 
-        # Lớp nén kênh
         self.conv1 = nn.Conv2d(dim, dim, 1, bias=False)
+        self.bn_norm = nn.BatchNorm2d(dim) 
+        
         nn.init.constant_(self.conv1.weight, 0)
+        nn.init.constant_(self.bn_norm.weight, 1)
+        nn.init.constant_(self.bn_norm.bias, 0)
 
     def forward(self, x):
         attn = self.conv0h(x)
@@ -678,10 +681,8 @@ class HOD_LSKA(nn.Module):
         attn = self.conv_spatial_h(attn)
         attn = self.conv_spatial_v(attn)
 
-        attn = self.conv1(attn)
-
+        attn = self.bn_norm(self.conv1(attn))
         mask = torch.sigmoid(attn) 
-        
         return mask
 
 class EE_Block(nn.Module):
