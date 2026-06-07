@@ -62,7 +62,7 @@ class InStrip(nn.Module):
         out1 = self.x1(x)
         out2 = self.x2(x)
         out3_1 = self.x3_1(x)
-        out3_2 = out3_1 + out2
+        out3_2 = out3_1 + out2 + x 
         out3 = self.x3_2(out3_2)
         out3_3 = out3 + out3_2
         out4 = self.x4(self.mp(x))
@@ -442,17 +442,15 @@ class FPSPP(nn.Module):
         self.cv2 = Conv(c_ * 2, c2, k=1, s=1)
 
     def forward(self, x):
-        # Nén kênh
         x_reduced = self.cv1(x)
-        
-        # Đặc trưng sau khi làm mịn (không bị mất tín hiệu không gian nhờ residual)
+
         x_fast = self.faster_block(x_reduced)
         pks_in = self.act(self.proj_1(x_fast))
         pks_out = self.pks(pks_in)
         pks_out = self.proj_2(pks_out)
         
         # Áp dụng Layer Scale để hãm phương sai lúc khởi tạo
-        x_pks = x_fast + pks_out * self.layer_scale.unsqueeze(-1).unsqueeze(-1)
+        x_pks = pks_out * self.layer_scale.unsqueeze(-1).unsqueeze(-1)
         
         return self.cv2(torch.cat([x_fast, x_pks], dim=1))
 
@@ -611,6 +609,8 @@ class CoorBlock(nn.Module):
 
         self.odconv_h = ODConv2d(mip, inp, kernel_size=(n, 1), padding=(n//2, 0), kernel_num=1)
         self.odconv_v = ODConv2d(mip, inp, kernel_size=(1, n), padding=(0, n//2), kernel_num=1)
+        self.bn_h = nn.BatchNorm2d(inp)
+        self.bn_v = nn.BatchNorm2d(inp)
     def forward(self, x):
         residual = x
         b, c, h, w = x.size()
@@ -622,8 +622,8 @@ class CoorBlock(nn.Module):
         y = self.act(y)
         x_h, x_v = torch.split(y, [h, w], dim=2)
         x_v = x_v.permute(0, 1, 3, 2)
-        a_h = self.odconv_h(x_h).sigmoid()
-        a_v = self.odconv_v(x_v).sigmoid()
+        a_h = torch.sigmoid(self.bn_h(self.odconv_h(x_h)))
+        a_v = torch.sigmoid(self.bn_v(self.odconv_v(x_v)))
         return (x * a_h * a_v) + residual
 
 class HOD_LSKA(nn.Module):
@@ -632,42 +632,41 @@ class HOD_LSKA(nn.Module):
         self.k_size = k_size
 
         if k_size == 7:
-            # --- VŨ KHÍ MỚI: Nhìn gần bằng Attention 4D ---
             self.conv0h = ODConv2d(dim, dim, kernel_size=(1, 3), padding=(0, 1), groups=dim, kernel_num=1)
             self.conv0v = ODConv2d(dim, dim, kernel_size=(3, 1), padding=(1, 0), groups=dim, kernel_num=1)
             # --- GIỮ NGUYÊN: Nhìn xa bằng Dilation Tĩnh ---
-            self.conv_spatial_h = nn.Conv2d(dim, dim, kernel_size=(1, 3), stride=(1,1), padding=(0,2), groups=dim, dilation=2)
-            self.conv_spatial_v = nn.Conv2d(dim, dim, kernel_size=(3, 1), stride=(1,1), padding=(2,0), groups=dim, dilation=2)
+            self.conv_spatial_h = nn.Conv2d(dim, dim, kernel_size=(1, 3), stride=(1,1), padding=(0,2), groups=dim, dilation=2, bias=False)
+            self.conv_spatial_v = nn.Conv2d(dim, dim, kernel_size=(3, 1), stride=(1,1), padding=(2,0), groups=dim, dilation=2, bias=False)
             
         elif k_size == 11:
             self.conv0h = ODConv2d(dim, dim, kernel_size=(1, 3), padding=(0, 1), groups=dim, kernel_num=1)
             self.conv0v = ODConv2d(dim, dim, kernel_size=(3, 1), padding=(1, 0), groups=dim, kernel_num=1)
-            self.conv_spatial_h = nn.Conv2d(dim, dim, kernel_size=(1, 5), stride=(1,1), padding=(0,4), groups=dim, dilation=2)
-            self.conv_spatial_v = nn.Conv2d(dim, dim, kernel_size=(5, 1), stride=(1,1), padding=(4,0), groups=dim, dilation=2)
+            self.conv_spatial_h = nn.Conv2d(dim, dim, kernel_size=(1, 5), stride=(1,1), padding=(0,4), groups=dim, dilation=2, bias=False)
+            self.conv_spatial_v = nn.Conv2d(dim, dim, kernel_size=(5, 1), stride=(1,1), padding=(4,0), groups=dim, dilation=2, bias=False)
             
         elif k_size == 23:
             self.conv0h = ODConv2d(dim, dim, kernel_size=(1, 5), padding=(0, 2), groups=dim, kernel_num=1)
             self.conv0v = ODConv2d(dim, dim, kernel_size=(5, 1), padding=(2, 0), groups=dim, kernel_num=1)
-            self.conv_spatial_h = nn.Conv2d(dim, dim, kernel_size=(1, 7), stride=(1,1), padding=(0,9), groups=dim, dilation=3)
-            self.conv_spatial_v = nn.Conv2d(dim, dim, kernel_size=(7, 1), stride=(1,1), padding=(9,0), groups=dim, dilation=3)
+            self.conv_spatial_h = nn.Conv2d(dim, dim, kernel_size=(1, 7), stride=(1,1), padding=(0,9), groups=dim, dilation=3, bias=False)
+            self.conv_spatial_v = nn.Conv2d(dim, dim, kernel_size=(7, 1), stride=(1,1), padding=(9,0), groups=dim, dilation=3, bias=False)
             
         elif k_size == 35:
             self.conv0h = ODConv2d(dim, dim, kernel_size=(1, 5), padding=(0, 2), groups=dim, kernel_num=1)
             self.conv0v = ODConv2d(dim, dim, kernel_size=(5, 1), padding=(2, 0), groups=dim, kernel_num=1)
-            self.conv_spatial_h = nn.Conv2d(dim, dim, kernel_size=(1, 11), stride=(1,1), padding=(0,15), groups=dim, dilation=3)
-            self.conv_spatial_v = nn.Conv2d(dim, dim, kernel_size=(11, 1), stride=(1,1), padding=(15,0), groups=dim, dilation=3)
+            self.conv_spatial_h = nn.Conv2d(dim, dim, kernel_size=(1, 11), stride=(1,1), padding=(0,15), groups=dim, dilation=3, bias=False)
+            self.conv_spatial_v = nn.Conv2d(dim, dim, kernel_size=(11, 1), stride=(1,1), padding=(15,0), groups=dim, dilation=3, bias=False)
             
         elif k_size == 41:
             self.conv0h = ODConv2d(dim, dim, kernel_size=(1, 5), padding=(0, 2), groups=dim, kernel_num=1)
             self.conv0v = ODConv2d(dim, dim, kernel_size=(5, 1), padding=(2, 0), groups=dim, kernel_num=1)
-            self.conv_spatial_h = nn.Conv2d(dim, dim, kernel_size=(1, 13), stride=(1,1), padding=(0,18), groups=dim, dilation=3)
-            self.conv_spatial_v = nn.Conv2d(dim, dim, kernel_size=(13, 1), stride=(1,1), padding=(18,0), groups=dim, dilation=3)
+            self.conv_spatial_h = nn.Conv2d(dim, dim, kernel_size=(1, 13), stride=(1,1), padding=(0,18), groups=dim, dilation=3, bias=False)
+            self.conv_spatial_v = nn.Conv2d(dim, dim, kernel_size=(13, 1), stride=(1,1), padding=(18,0), groups=dim, dilation=3, bias=False)
             
         elif k_size == 53:
             self.conv0h = ODConv2d(dim, dim, kernel_size=(1, 5), padding=(0, 2), groups=dim, kernel_num=1)
             self.conv0v = ODConv2d(dim, dim, kernel_size=(5, 1), padding=(2, 0), groups=dim, kernel_num=1)
-            self.conv_spatial_h = nn.Conv2d(dim, dim, kernel_size=(1, 17), stride=(1,1), padding=(0,24), groups=dim, dilation=3)
-            self.conv_spatial_v = nn.Conv2d(dim, dim, kernel_size=(17, 1), stride=(1,1), padding=(24,0), groups=dim, dilation=3)
+            self.conv_spatial_h = nn.Conv2d(dim, dim, kernel_size=(1, 17), stride=(1,1), padding=(0,24), groups=dim, dilation=3, bias=False)
+            self.conv_spatial_v = nn.Conv2d(dim, dim, kernel_size=(17, 1), stride=(1,1), padding=(24,0), groups=dim, dilation=3, bias=False)
 
         # Lớp nén kênh
         self.conv1 = nn.Conv2d(dim, dim, 1, bias=False)
@@ -709,8 +708,17 @@ class IndirectlyPathContextGuide(nn.Module):
         super().__init__()
         p_i2, p_i1, p_i = c_list[0], c_list[1], c_list[2]
 
-        self.p2top1 = nn.Conv2d(p_i2, p_i1, kernel_size=1, bias=False)
-        self.p1top = nn.Conv2d(p_i1, p_i, kernel_size=1, bias=False)
+        self.p2top1 = nn.Sequential(
+            nn.Conv2d(p_i2, p_i1, kernel_size=1, bias=False),
+            nn.BatchNorm2d(p_i1),
+            nn.SiLU(inplace=True)
+        )
+
+        self.p1top = nn.Sequential(
+            nn.Conv2d(p_i1, p_i, kernel_size=1, bias=False),
+            nn.BatchNorm2d(p_i),
+            nn.SiLU(inplace=True)
+        )
         self.coorblock = CoorBlock(p_i1, reduction=16, n=5)
         
   
@@ -718,10 +726,13 @@ class IndirectlyPathContextGuide(nn.Module):
         self.dysample_mid_to_shallow = DySample(p_i)
         self.gap = nn.Sequential(
             nn.AdaptiveAvgPool2d(1),
-            nn.Conv2d(p_i, p_i, kernel_size=1, bias=False)
+            nn.Conv2d(p_i, p_i, kernel_size=1, bias=False),
+            nn.BatchNorm2d(p_i) # Bắt buộc phải có để chống bão hòa
         )
         nn.init.constant_(self.gap[1].weight, 0)
-        self.od_lska = HOD_LSKA(dim=p_i1, k_size=23)
+        nn.init.constant_(self.gap[2].weight, 1)
+        nn.init.constant_(self.gap[2].bias, 0)
+        self.od_lska = HOD_LSKA(dim=p_i1, k_size=35)
         self.ee_block = EE_Block(p_i)
 
     def forward(self, x):
