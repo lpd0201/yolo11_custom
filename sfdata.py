@@ -3,9 +3,9 @@ import glob
 import random
 
 # 1. Khai báo đường dẫn gốc (Dùng r"..." để Windows không bị lỗi ký tự đặc biệt)
-val_dir = r"C:\Users\DUONG\Desktop\Paper_Q3_YOLO\VisDrone\VisDrone\images\val"
+val_dir = r"E:/Data_KHOI/Project_YOLO/dataset/VisDrone/images/val"
 # Mình suy luận thư mục train của bạn sẽ nằm cùng cấp:
-train_dir = r"C:\Users\DUONG\Desktop\Paper_Q3_YOLO\VisDrone\VisDrone\images\train"
+train_dir = r"E:/Data_KHOI/Project_YOLO/dataset/VisDrone/images/train"
 
 # 2. Quét toàn bộ ảnh
 train_imgs = glob.glob(os.path.join(train_dir, "*.jpg"))
@@ -33,12 +33,12 @@ new_train = [img.replace('\\', '/') for img in new_train]
 new_val = [img.replace('\\', '/') for img in new_val]
 
 # 6. Chọn nơi lưu 2 file .txt (Lưu ngay ngoài thư mục VisDrone cho gọn)
-output_dir = r"C:\Users\DUONG\Desktop\Paper_Q3_YOLO\VisDrone\VisDrone"
+output_dir = r"E:\Data_KHOI/Project_YOLO\dataset/VisDrone"
 
-with open(os.path.join(output_dir, "train_resplit.txt"), "w") as f:
+with open(os.path.join(output_dir, "newtrain_sf.txt"), "w") as f:
     f.write("\n".join(new_train))
 
-with open(os.path.join(output_dir, "val_resplit.txt"), "w") as f:
+with open(os.path.join(output_dir, "newval_sf.txt"), "w") as f:
     f.write("\n".join(new_val))
 
-print(f"Đã tạo xong file tại:\n - {output_dir}\\train_resplit.txt\n - {output_dir}\\val_resplit.txt")
+print(f"Đã tạo xong file tại:\n - {output_dir}\\newtrain_sf.txt\n - {output_dir}\\newval_rf.txt")

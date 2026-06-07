@@ -17,7 +17,8 @@ if __name__ == "__main__":
         lr0=0.01,
         lrf=0.01,
         weight_decay=0.0005,
-        amp=False
+        amp=False,
+        cache=False
     )
 
 

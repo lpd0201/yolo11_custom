@@ -127,11 +127,9 @@ class RexHazyBlock(nn.Module):
         self.c1 = c1
         c_half = c1 // 2
         self.branch1 = nn.Sequential(
-    # Ép kênh chuẩn xác bằng 1x1
             nn.Conv2d(c1, c_half, kernel_size=1, bias=False),
             nn.BatchNorm2d(c_half),
             nn.SiLU(inplace=True),
-            # Giờ mới áp dụng Depthwise an toàn (in=out=groups=c_half)
             nn.Conv2d(c_half, c_half, kernel_size=5, padding=2, groups=c_half, bias=False),
             nn.BatchNorm2d(c_half),
             nn.SiLU(inplace=True)
@@ -458,112 +456,292 @@ class FPSPP(nn.Module):
         
         return self.cv2(torch.cat([x_fast, x_pks], dim=1))
 
-class IndirectlyPathContextGuide(nn.Module):
-    """
-    Ý tưởng:
-    Pi+2 (deep nhất) → 2 nhánh:
-        1. Tạo mask A (global pool → conv1 → relu → conv2 → sigmoid)
-        2. Dysample lên kích thước Pi+1
-    
-    Sau đó:
-        P0 = dysample(Pi+2) + Pi+1
-        P1 = P0 × mask_A
-        F_out_mid = P1 + Pi+1  (đầu ra tầng giữa)
+import torch
+import torch.nn as nn
+import torch.nn.functional as F
+
+class Attention(nn.Module):
+    def __init__(self, in_planes, out_planes, kernel_size, groups=1, reduction=0.0625, kernel_num=4, min_channel=16):
+        super(Attention, self).__init__()
+        attention_channel = max(int(in_planes * reduction), min_channel)
         
-        Tiếp tục:
-        Dysample F_out_mid lên kích thước Pi
-        Final = dysample(F_out_mid) + Pi
-    """
-    def __init__(self, c_list, r=16):
-        """
-        Args:
-            c_list: [c_deep, c_mid, c_shallow] tương ứng [c(Pi+2), c(Pi+1), c(Pi)]
-            r: reduction ratio cho bottleneck trong mask
-        """
-        super().__init__()
-        c_deep, c_mid, c_shallow = c_list[0], c_list[1], c_list[2]
-        
-        # ========== NHÁNH 1: Chuẩn bị cho tầng Mid (Pi+1) ==========
-        # 1a. Align channels từ Deep (Pi+2) về Mid (Pi+1)
-        self.align_deep_to_mid = nn.Sequential(
-            nn.Conv2d(c_deep, c_mid, kernel_size=1, bias=False),
-            nn.BatchNorm2d(c_mid),
-            nn.SiLU(inplace=True)
-        )
-        
-        # 1b. Dysample để lên size Pi+1
-        self.dysample_deep_to_mid = DySample(c_mid)
-        
-        # ========== MASK A từ Pi+2 (global pool → conv → relu → conv → sigmoid) ==========
-        c_reduced = max(8, c_deep // r)
-        self.mask_generator = nn.Sequential(
-            nn.AdaptiveAvgPool2d(1),           # Global pool: C × 1 × 1
-            nn.Conv2d(c_deep, c_reduced, kernel_size=1, bias=False),  # C → C/r
-            nn.BatchNorm2d(c_reduced),
-            nn.ReLU(inplace=True),
-            nn.Conv2d(c_reduced, c_mid, kernel_size=1, bias=True),    # C/r → C_mid
-            nn.Sigmoid()                        # Mask A: C_mid × 1 × 1
-        )
-        
-        # ========== NHÁNH 2: Chuẩn bị cho tầng Shallow (Pi) ==========
-        # 2a. Align channels từ Mid (đã fused) về Shallow (Pi)
-        self.align_mid_to_shallow = nn.Sequential(
-            nn.Conv2d(c_mid, c_shallow, kernel_size=1, bias=False),
-            nn.BatchNorm2d(c_shallow),
-            nn.SiLU(inplace=True)
-        )
-        
-        # 2b. Dysample để lên size Pi
-        self.dysample_mid_to_shallow = DySample(c_shallow)
-        nn.init.constant_(self.mask_generator[4].weight, 0)
+        # BẢN VÁ: Hỗ trợ Kernel dạng Tuple (Asymmetric)
+        self.kernel_h, self.kernel_w = kernel_size if isinstance(kernel_size, tuple) else (kernel_size, kernel_size)
+        self.kernel_num = kernel_num
+        self.temperature = 1.0
+
+        self.avgpool = nn.AdaptiveAvgPool2d(1)
+        self.fc = nn.Conv2d(in_planes, attention_channel, 1, bias=False)
+        self.bn = nn.BatchNorm2d(attention_channel)
+        self.relu = nn.ReLU(inplace=True)
+
+        self.channel_fc = nn.Conv2d(attention_channel, in_planes, 1, bias=True)
+        self.func_channel = self.get_channel_attention
+
+        if in_planes == groups and in_planes == out_planes:
+            self.func_filter = self.skip
+        else:
+            self.filter_fc = nn.Conv2d(attention_channel, out_planes, 1, bias=True)
+            self.func_filter = self.get_filter_attention
+
+        # BẢN VÁ: Tính toán số lượng điểm của Kernel Asym
+        if self.kernel_h == 1 and self.kernel_w == 1:
+            self.func_spatial = self.skip
+        else:
+            self.spatial_fc = nn.Conv2d(attention_channel, self.kernel_h * self.kernel_w, 1, bias=True)
+            self.func_spatial = self.get_spatial_attention
+
+        if kernel_num == 1:
+            self.func_kernel = self.skip
+        else:
+            self.kernel_fc = nn.Conv2d(attention_channel, kernel_num, 1, bias=True)
+            self.func_kernel = self.get_kernel_attention
+
+        self._initialize_weights()
+
+    def _initialize_weights(self):
+        for m in self.modules():
+            if isinstance(m, nn.Conv2d):
+                nn.init.kaiming_normal_(m.weight, mode='fan_out', nonlinearity='relu')
+                if m.bias is not None:
+                    nn.init.constant_(m.bias, 0)
+            if isinstance(m, nn.BatchNorm2d):
+                nn.init.constant_(m.weight, 1)
+                nn.init.constant_(m.bias, 0)
+
+    def update_temperature(self, temperature):
+        self.temperature = temperature
+
+    @staticmethod
+    def skip(_):
+        return 1.0
+
+    def get_channel_attention(self, x):
+        return torch.sigmoid(self.channel_fc(x).view(x.size(0), -1, 1, 1) / self.temperature)
+
+    def get_filter_attention(self, x):
+        return torch.sigmoid(self.filter_fc(x).view(x.size(0), -1, 1, 1) / self.temperature)
+
+    def get_spatial_attention(self, x):
+        # BẢN VÁ: View theo kernel_h và kernel_w độc lập
+        spatial_attention = self.spatial_fc(x).view(x.size(0), 1, 1, 1, self.kernel_h, self.kernel_w)
+        return torch.sigmoid(spatial_attention / self.temperature)
+
+    def get_kernel_attention(self, x):
+        kernel_attention = self.kernel_fc(x).view(x.size(0), -1, 1, 1, 1, 1)
+        return F.softmax(kernel_attention / self.temperature, dim=1)
 
     def forward(self, x):
-        """
-        Args:
-            x: list gồm 3 tensors [Pi+2, Pi+1, Pi]
-               - Pi+2: deep nhất (ví dụ P4), shape: [B, c_deep, H, W]
-               - Pi+1: tầng giữa (ví dụ P3), shape: [B, c_mid, 2H, 2W]
-               - Pi: tầng shallow (ví dụ P2), shape: [B, c_shallow, 4H, 4W]
-        
-        Returns:
-            final_features: kết quả sau khi fuse, shape bằng với Pi [B, c_shallow, 4H, 4W]
-        """
-        p_deep, p_mid, p_shallow = x[0], x[1], x[2]  # Pi+2, Pi+1, Pi
-        
-        # ==================== GIAI ĐOẠN 1: XỬ LÝ TẦNG MID ====================
-        # 1. Tạo mask A từ Pi+2 (deep nhất)
-        mask_A = self.mask_generator(p_deep)  # [B, c_mid, 1, 1]
-        
-        # 2. Align channels và dysample Pi+2 lên kích thước Pi+1
-        p_deep_aligned = self.align_deep_to_mid(p_deep)      # [B, c_mid, H, W]
-        p_deep_up = self.dysample_deep_to_mid(p_deep_aligned) # [B, c_mid, 2H, 2W]
-        
-        # 3. Đảm bảo spatial size khớp với p_mid (safety)
-        if p_deep_up.shape[2:] != p_mid.shape[2:]:
-            p_deep_up = F.interpolate(p_deep_up, size=p_mid.shape[2:], 
-                                      mode='bilinear', align_corners=False)
-        
-        # 4. P0 = dysample(Pi+2) + Pi+1
-        P0 = p_deep_up + p_mid
-        
-        # 5. P1 = P0 × mask_A
-        P1 = P0 * mask_A
-        
-        # 6. F_out_mid = P1 + Pi+1  (đầu ra tầng giữa)
-        F_out_mid = P1 + p_mid
-        
-        # ==================== GIAI ĐOẠN 2: TRUYỀN XUỐNG TẦNG SHALLOW ====================
-        # 7. Align channels và dysample F_out_mid lên kích thước Pi
-        mid_aligned = self.align_mid_to_shallow(F_out_mid)     # [B, c_shallow, 2H, 2W]
-        mid_up = self.dysample_mid_to_shallow(mid_aligned)      # [B, c_shallow, 4H, 4W]
-        
-        # 8. Đảm bảo spatial size khớp với p_shallow (safety)
-        if mid_up.shape[2:] != p_shallow.shape[2:]:
-            mid_up = F.interpolate(mid_up, size=p_shallow.shape[2:], 
-                                   mode='bilinear', align_corners=False)
-        
-        # 9. Final = dysample(F_out_mid) + Pi
-        final_features = mid_up + p_shallow
-        
-        return final_features
+        x = self.relu(self.bn(self.fc(self.avgpool(x))))
+        return self.func_channel(x), self.func_filter(x), self.func_spatial(x), self.func_kernel(x)
 
+
+class ODConv2d(nn.Module):
+    def __init__(self, in_planes, out_planes, kernel_size, stride=1, padding=0, dilation=1, groups=1,
+                 reduction=0.0625, kernel_num=4):
+        super(ODConv2d, self).__init__()
+        self.in_planes = in_planes
+        self.out_planes = out_planes
+        
+        # BẢN VÁ: Khởi tạo kích thước Kernel
+        self.kernel_h, self.kernel_w = kernel_size if isinstance(kernel_size, tuple) else (kernel_size, kernel_size)
+        self.stride = stride
+        self.padding = padding
+        self.dilation = dilation
+        self.groups = groups
+        self.kernel_num = kernel_num
+        self.attention = Attention(in_planes, out_planes, kernel_size, groups=groups,
+                                   reduction=reduction, kernel_num=kernel_num)
+        
+        # BẢN VÁ: Trọng số khởi tạo theo (kernel_h, kernel_w)
+        self.weight = nn.Parameter(torch.randn(kernel_num, out_planes, in_planes//groups, self.kernel_h, self.kernel_w),
+                                   requires_grad=True)
+        self._initialize_weights()
+
+        if self.kernel_h == 1 and self.kernel_w == 1 and self.kernel_num == 1:
+            self._forward_impl = self._forward_impl_pw1x
+        else:
+            self._forward_impl = self._forward_impl_common
+
+    def _initialize_weights(self):
+        for i in range(self.kernel_num):
+            nn.init.kaiming_normal_(self.weight[i], mode='fan_out', nonlinearity='relu')
+
+    def update_temperature(self, temperature):
+        self.attention.update_temperature(temperature)
+
+    def _forward_impl_common(self, x):
+        channel_attention, filter_attention, spatial_attention, kernel_attention = self.attention(x)
+        batch_size, in_planes, height, width = x.size()
+        x = x * channel_attention
+        x = x.reshape(1, -1, height, width)
+        aggregate_weight = spatial_attention * kernel_attention * self.weight.unsqueeze(dim=0)
+        
+        # BẢN VÁ: View lại theo kernel_h và kernel_w
+        aggregate_weight = torch.sum(aggregate_weight, dim=1).view(
+            [-1, self.in_planes // self.groups, self.kernel_h, self.kernel_w])
+            
+        output = F.conv2d(x, weight=aggregate_weight, bias=None, stride=self.stride, padding=self.padding,
+                          dilation=self.dilation, groups=self.groups * batch_size)
+        output = output.view(batch_size, self.out_planes, output.size(-2), output.size(-1))
+        output = output * filter_attention
+        return output
+
+    def _forward_impl_pw1x(self, x):
+        channel_attention, filter_attention, spatial_attention, kernel_attention = self.attention(x)
+        x = x * channel_attention
+        output = F.conv2d(x, weight=self.weight.squeeze(dim=0), bias=None, stride=self.stride, padding=self.padding,
+                          dilation=self.dilation, groups=self.groups)
+        output = output * filter_attention
+        return output
+
+    def forward(self, x):
+        return self._forward_impl(x)
+
+class CoorBlock(nn.Module):
+    def __init__(self, inp, reduction=16, n=5):
+        super().__init__()
+        self.pool_h = nn.AdaptiveAvgPool2d((None, 1))
+        self.pool_v = nn.AdaptiveAvgPool2d((1, None))
+
+        mip = max(8, inp // reduction)
+        self.conv1 = nn.Conv2d(inp, mip, kernel_size=1, stride=1, padding=0, bias=False)
+        self.bn1 = nn.BatchNorm2d(mip)
+        self.act = nn.SiLU(inplace=True)
+
+        self.odconv_h = ODConv2d(mip, inp, kernel_size=(n, 1), padding=(n//2, 0), kernel_num=1)
+        self.odconv_v = ODConv2d(mip, inp, kernel_size=(1, n), padding=(0, n//2), kernel_num=1)
+    def forward(self, x):
+        residual = x
+        b, c, h, w = x.size()
+        x_h = self.pool_h(x)
+        x_v = self.pool_v(x).permute(0, 1, 3, 2)
+        y = torch.cat([x_h, x_v], dim=2)
+        y = self.conv1(y)
+        y = self.bn1(y)
+        y = self.act(y)
+        x_h, x_v = torch.split(y, [h, w], dim=2)
+        x_v = x_v.permute(0, 1, 3, 2)
+        a_h = self.odconv_h(x_h).sigmoid()
+        a_v = self.odconv_v(x_v).sigmoid()
+        return (x * a_h * a_v) + residual
+
+class HOD_LSKA(nn.Module):
+    def __init__(self, dim, k_size):
+        super().__init__()
+        self.k_size = k_size
+
+        if k_size == 7:
+            # --- VŨ KHÍ MỚI: Nhìn gần bằng Attention 4D ---
+            self.conv0h = ODConv2d(dim, dim, kernel_size=(1, 3), padding=(0, 1), groups=dim, kernel_num=1)
+            self.conv0v = ODConv2d(dim, dim, kernel_size=(3, 1), padding=(1, 0), groups=dim, kernel_num=1)
+            # --- GIỮ NGUYÊN: Nhìn xa bằng Dilation Tĩnh ---
+            self.conv_spatial_h = nn.Conv2d(dim, dim, kernel_size=(1, 3), stride=(1,1), padding=(0,2), groups=dim, dilation=2)
+            self.conv_spatial_v = nn.Conv2d(dim, dim, kernel_size=(3, 1), stride=(1,1), padding=(2,0), groups=dim, dilation=2)
+            
+        elif k_size == 11:
+            self.conv0h = ODConv2d(dim, dim, kernel_size=(1, 3), padding=(0, 1), groups=dim, kernel_num=1)
+            self.conv0v = ODConv2d(dim, dim, kernel_size=(3, 1), padding=(1, 0), groups=dim, kernel_num=1)
+            self.conv_spatial_h = nn.Conv2d(dim, dim, kernel_size=(1, 5), stride=(1,1), padding=(0,4), groups=dim, dilation=2)
+            self.conv_spatial_v = nn.Conv2d(dim, dim, kernel_size=(5, 1), stride=(1,1), padding=(4,0), groups=dim, dilation=2)
+            
+        elif k_size == 23:
+            self.conv0h = ODConv2d(dim, dim, kernel_size=(1, 5), padding=(0, 2), groups=dim, kernel_num=1)
+            self.conv0v = ODConv2d(dim, dim, kernel_size=(5, 1), padding=(2, 0), groups=dim, kernel_num=1)
+            self.conv_spatial_h = nn.Conv2d(dim, dim, kernel_size=(1, 7), stride=(1,1), padding=(0,9), groups=dim, dilation=3)
+            self.conv_spatial_v = nn.Conv2d(dim, dim, kernel_size=(7, 1), stride=(1,1), padding=(9,0), groups=dim, dilation=3)
+            
+        elif k_size == 35:
+            self.conv0h = ODConv2d(dim, dim, kernel_size=(1, 5), padding=(0, 2), groups=dim, kernel_num=1)
+            self.conv0v = ODConv2d(dim, dim, kernel_size=(5, 1), padding=(2, 0), groups=dim, kernel_num=1)
+            self.conv_spatial_h = nn.Conv2d(dim, dim, kernel_size=(1, 11), stride=(1,1), padding=(0,15), groups=dim, dilation=3)
+            self.conv_spatial_v = nn.Conv2d(dim, dim, kernel_size=(11, 1), stride=(1,1), padding=(15,0), groups=dim, dilation=3)
+            
+        elif k_size == 41:
+            self.conv0h = ODConv2d(dim, dim, kernel_size=(1, 5), padding=(0, 2), groups=dim, kernel_num=1)
+            self.conv0v = ODConv2d(dim, dim, kernel_size=(5, 1), padding=(2, 0), groups=dim, kernel_num=1)
+            self.conv_spatial_h = nn.Conv2d(dim, dim, kernel_size=(1, 13), stride=(1,1), padding=(0,18), groups=dim, dilation=3)
+            self.conv_spatial_v = nn.Conv2d(dim, dim, kernel_size=(13, 1), stride=(1,1), padding=(18,0), groups=dim, dilation=3)
+            
+        elif k_size == 53:
+            self.conv0h = ODConv2d(dim, dim, kernel_size=(1, 5), padding=(0, 2), groups=dim, kernel_num=1)
+            self.conv0v = ODConv2d(dim, dim, kernel_size=(5, 1), padding=(2, 0), groups=dim, kernel_num=1)
+            self.conv_spatial_h = nn.Conv2d(dim, dim, kernel_size=(1, 17), stride=(1,1), padding=(0,24), groups=dim, dilation=3)
+            self.conv_spatial_v = nn.Conv2d(dim, dim, kernel_size=(17, 1), stride=(1,1), padding=(24,0), groups=dim, dilation=3)
+
+        # Lớp nén kênh
+        self.conv1 = nn.Conv2d(dim, dim, 1, bias=False)
+        nn.init.constant_(self.conv1.weight, 0)
+
+    def forward(self, x):
+        attn = self.conv0h(x)
+        attn = self.conv0v(attn)
+        attn = self.conv_spatial_h(attn)
+        attn = self.conv_spatial_v(attn)
+
+        attn = self.conv1(attn)
+
+        mask = torch.sigmoid(attn) 
+        
+        return mask
+
+class EE_Block(nn.Module):
+    def __init__(self, c_in):
+        super().__init__()
+        self.avg_pool = nn.AvgPool2d(kernel_size=3, stride=1, padding=1)
+        self.dw_conv = nn.Conv2d(c_in, c_in, 3, 1, 1, groups=c_in, bias=False)
+        self.bn = nn.BatchNorm2d(c_in)
+
+        self.gate = nn.Sequential(
+            nn.Conv2d(c_in, c_in, 1, bias=False),
+            nn.BatchNorm2d(c_in),
+            nn.Sigmoid()
+        )
+
+    def forward(self, x):
+        high_freq = x - self.avg_pool(x) 
+        edge_feat = self.bn(self.dw_conv(high_freq))
+
+        return x + edge_feat * self.gate(x)
+
+class IndirectlyPathContextGuide(nn.Module):
+    def __init__(self, c_list, r=16):
+        super().__init__()
+        p_i2, p_i1, p_i = c_list[0], c_list[1], c_list[2]
+
+        self.p2top1 = nn.Conv2d(p_i2, p_i1, kernel_size=1, bias=False)
+        self.p1top = nn.Conv2d(p_i1, p_i, kernel_size=1, bias=False)
+        self.coorblock = CoorBlock(p_i1, reduction=16, n=5)
+        
+  
+        self.dysample_deep_to_mid = DySample(p_i1)
+        self.dysample_mid_to_shallow = DySample(p_i)
+        self.gap = nn.Sequential(
+            nn.AdaptiveAvgPool2d(1),
+            nn.Conv2d(p_i, p_i, kernel_size=1, bias=False)
+        )
+        nn.init.constant_(self.gap[1].weight, 0)
+        self.od_lska = HOD_LSKA(dim=p_i1, k_size=23)
+        self.ee_block = EE_Block(p_i)
+
+    def forward(self, x):
+        p_i2, p_i1, p_i = x[0], x[1], x[2]  
+        p_i2_aligned = self.p2top1(p_i2)
+        mask_C_small = self.od_lska(p_i2_aligned)  
+        mask_C = F.interpolate(mask_C_small, size=p_i1.shape[2:], mode='bilinear', align_corners=False)
+        p_i2_up = self.dysample_deep_to_mid(p_i2_aligned)
+        if p_i2_up.shape[2:] != p_i1.shape[2:]:
+            p_i2_up = F.interpolate(p_i2_up, size=p_i1.shape[2:], mode='bilinear', align_corners=False)
+        fuse_1 = p_i2_up + p_i1
+        fuse_1_masked = fuse_1 * mask_C
+        coor_spatial = self.coorblock(p_i1)
+        f_out_mid = coor_spatial + fuse_1_masked
+        mid_aligned = self.p1top(f_out_mid)
+        mid_up = self.dysample_mid_to_shallow(mid_aligned)
+        if mid_up.shape[2:] != p_i.shape[2:]:
+            mid_up = F.interpolate(mid_up, size=p_i.shape[2:], mode='bilinear', align_corners=False)
+        f_out_shallow = mid_up + p_i
+        channel_mask = torch.sigmoid(self.gap(f_out_shallow)) 
+        p_i_sharpened = self.ee_block(p_i)
+        final_features = p_i_sharpened * channel_mask
+        return final_features
