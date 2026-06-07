@@ -62,7 +62,7 @@ class InStrip(nn.Module):
         out1 = self.x1(x)
         out2 = self.x2(x)
         out3_1 = self.x3_1(x)
-        out3_2 = out3_1 + out2 + x 
+        out3_2 = out3_1 + out2
         out3 = self.x3_2(out3_2)
         out3_3 = out3 + out3_2
         out4 = self.x4(self.mp(x))
